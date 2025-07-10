@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        LABS = credentials('labcreds')
+        LABS = credentials('labcreds')  // LABS_USR and LABS_PSW from Jenkins credentials
         JAVA_HOME = '/opt/bitnami/java'
         PATH = "${env.JAVA_HOME}/bin:${env.PATH}"
     }
@@ -11,29 +11,35 @@ pipeline {
         stage('Setup Virtual Environment and Install Dependencies') {
             steps {
                 script {
+                    // Ensure pipenv is available globally
+                    sh '''
+                        if ! command -v pipenv &> /dev/null; then
+                            echo "🔧 Installing pipenv globally..."
+                            pip install --user pipenv
+                            export PATH=$HOME/.local/bin:$PATH
+                        fi
+                    '''
+
                     // Create virtual environment
                     sh 'python3 -m venv retail_pipeline_venv'
-
-                    // Upgrade pip
                     sh './retail_pipeline_venv/bin/pip install --upgrade pip'
 
-                    // Check if requirements.txt exists
+                    // Handle dependency installation
                     sh '''
+                        export PATH=$HOME/.local/bin:$PATH
                         if [ ! -f requirements.txt ]; then
                             echo "⚠️ requirements.txt not found. Checking for Pipfile..."
                             if [ -f Pipfile ]; then
-                                echo "✅ Pipfile found. Installing pipenv and generating requirements.txt..."
-                                ./retail_pipeline_venv/bin/pip install pipenv
-                                ./retail_pipeline_venv/bin/pipenv lock -r > requirements.txt
+                                echo "✅ Pipfile found. Generating requirements.txt using pipenv..."
+                                pipenv lock -r > requirements.txt
                             else
                                 echo "❌ Neither requirements.txt nor Pipfile found. Failing build."
                                 exit 1
                             fi
                         else
-                            echo "✅ requirements.txt found. Proceeding with installation."
+                            echo "✅ requirements.txt found. Proceeding with pip installation."
                         fi
 
-                        # Install dependencies
                         ./retail_pipeline_venv/bin/pip install -r requirements.txt
                     '''
                 }
@@ -58,7 +64,9 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                sh 'sshpass -p $LABS_PSW scp -o StrictHostKeyChecking=no -r retailproject.zip $LABS_USR@g02.itversity.com:/home/itv012419/retailproject'
+                sh '''
+                    sshpass -p "$LABS_PSW" scp -o StrictHostKeyChecking=no -r retailproject.zip $LABS_USR@g02.itversity.com:/home/itv012419/retailproject
+                '''
             }
         }
     }
