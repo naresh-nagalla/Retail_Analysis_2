@@ -2,72 +2,90 @@ pipeline {
     agent any
 
     environment {
-        LABS = credentials('labcreds')  // LABS_USR and LABS_PSW from Jenkins credentials
-        JAVA_HOME = '/opt/bitnami/java'
-        PATH = "${env.JAVA_HOME}/bin:${env.PATH}"
+        VENV_DIR = 'retail_pipeline_venv'
     }
 
     stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
         stage('Setup Virtual Environment and Install Dependencies') {
             steps {
-                script {
-                    // Ensure pipenv is available globally
-                    sh '''
-                        if ! command -v pipenv &> /dev/null; then
-                            echo "🔧 Installing pipenv globally..."
-                            pip install --user pipenv
-                            export PATH=$HOME/.local/bin:$PATH
-                        fi
-                    '''
+                sh '''
+                    set -e
+                    echo "🐍 Setting up Python virtual environment..."
 
-                    // Create virtual environment
-                    sh 'python3 -m venv retail_pipeline_venv'
-                    sh './retail_pipeline_venv/bin/pip install --upgrade pip'
+                    # Create virtual environment
+                    python3 -m venv ${VENV_DIR}
+                    source ${VENV_DIR}/bin/activate
 
-                    // Handle dependency installation
-                    sh '''
-                        export PATH=$HOME/.local/bin:$PATH
-                        if [ ! -f requirements.txt ]; then
-                            echo "⚠️ requirements.txt not found. Checking for Pipfile..."
-                            if [ -f Pipfile ]; then
-                                echo "✅ Pipfile found. Generating requirements.txt using pipenv..."
-                                pipenv lock -r > requirements.txt
-                            else
-                                echo "❌ Neither requirements.txt nor Pipfile found. Failing build."
-                                exit 1
-                            fi
+                    # Generate requirements.txt if missing
+                    if [ ! -f requirements.txt ]; then
+                        echo "⚠️ requirements.txt not found. Checking for Pipfile..."
+                        if [ -f Pipfile ]; then
+                            echo "✅ Pipfile found. Using pipenv to generate requirements.txt..."
+                            pipenv lock --requirements > requirements.txt
                         else
-                            echo "✅ requirements.txt found. Proceeding with pip installation."
+                            echo "❌ Neither requirements.txt nor Pipfile found. Exiting."
+                            exit 1
                         fi
+                    fi
 
-                        ./retail_pipeline_venv/bin/pip install -r requirements.txt
-                    '''
-                }
+                    # Install dependencies
+                    echo "📦 Installing dependencies..."
+                    ${VENV_DIR}/bin/pip install --upgrade pip
+                    ${VENV_DIR}/bin/pip install -r requirements.txt
+                '''
             }
         }
 
         stage('Test') {
             steps {
-                script {
-                    sh 'echo $JAVA_HOME'
-                    sh 'echo $PATH'
-                    sh './retail_pipeline_venv/bin/pytest || echo "⚠️ Some tests may have failed."'
-                }
+                sh '''
+                    echo "🧪 Running tests..."
+                    source ${VENV_DIR}/bin/activate
+                    python -m unittest discover -s tests
+                    echo "✅ All tests passed."
+                '''
             }
         }
 
         stage('Package') {
             steps {
-                sh 'zip -r retailproject.zip . -x "retail_pipeline_venv/*"'
+                sh '''
+                    echo "📦 Packaging project..."
+                    source ${VENV_DIR}/bin/activate
+                    mkdir -p dist
+                    zip -r dist/retail_pipeline.zip . -x "${VENV_DIR}/*"
+                    echo "✅ Packaged as dist/retail_pipeline.zip"
+                '''
             }
         }
 
         stage('Deploy') {
             steps {
                 sh '''
-                    sshpass -p "$LABS_PSW" scp -o StrictHostKeyChecking=no -r retailproject.zip $LABS_USR@g02.itversity.com:/home/itv012419/retailproject
+                    echo "🚀 Deploying project..."
+                    source ${VENV_DIR}/bin/activate
+                    unzip -o dist/retail_pipeline.zip -d /tmp/deploy_dir
+                    echo "✅ Deployed to /tmp/deploy_dir"
                 '''
             }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'dist/*.zip', fingerprint: true
+        }
+        failure {
+            echo '❌ Build failed.'
+        }
+        success {
+            echo '🎉 Build succeeded.'
         }
     }
 }
